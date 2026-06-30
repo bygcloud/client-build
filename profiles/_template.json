@@ -1,0 +1,36 @@
+{
+  "$schema": "./_schema.json",
+  "id": "example",
+  "enabled": true,
+  "brand": {
+    "appName": "Example",
+    "appNameEn": "Example",
+    "slogan": "",
+    "packageId": "com.example.app",
+    "primaryColor": "#2196F3",
+    "iconUrl": "https://cdn.example.com/profiles/example/icon.png"
+  },
+  "recommend": {
+    "enabled": false,
+    "title": "",
+    "subtitle": "",
+    "buttonText": "",
+    "purchaseUrl": "",
+    "websiteUrl": ""
+  },
+  "subscription": {
+    "presetUrl": "",
+    "remoteConfigUrl": "",
+    "supportUrl": ""
+  },
+  "legal": {
+    "privacyPolicyUrl": "",
+    "termsUrl": "",
+    "telegramUrl": ""
+  },
+  "targets": {
+    "clash-verge-rev": true,
+    "FlClash": true,
+    "ClashMetaForAndroid": true
+  }
+}

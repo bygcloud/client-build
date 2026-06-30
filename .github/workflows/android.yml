@@ -1,0 +1,116 @@
+name: android
+
+# Android client build. Pulls the brand profile from object storage at build
+# time, applies it to upstream, signs with that brand's keystore, and publishes
+# the artifacts to object storage (not to this repo's Releases).
+
+on:
+  workflow_dispatch:
+    inputs:
+      brand:
+        description: 'Brand id'
+        required: true
+      ref:
+        description: 'Upstream ref to build from'
+        required: true
+        default: v0.8.93
+
+permissions:
+  contents: read
+
+env:
+  R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_AUTH_EMAIL: ${{ secrets.R2_AUTH_EMAIL }}
+  R2_AUTH_KEY: ${{ secrets.R2_AUTH_KEY }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Flutter + native core + NDK is disk-heavy; the default runner
+      # (~14GB free) runs out mid-build. Reclaim space from preinstalled tooling.
+      - name: Free disk space
+        run: |
+          # NOTE: do NOT remove /usr/local/lib/android/sdk/ndk — the native core
+          # build needs the SDK-bundled NDK toolchain. hostedtoolcache is safe to
+          # clear: setup-go/python reinstall what they need.
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/share/swift \
+            /usr/local/share/powershell /usr/local/share/chromium /usr/local/lib/node_modules \
+            /opt/hostedtoolcache || true
+          sudo apt-get clean || true
+          df -h / | tail -1
+
+      - name: Checkout builder
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Pillow (icon gen)
+        run: |
+          python -m pip install --quiet pillow
+          sudo apt-get update && sudo apt-get install -y webp
+
+      - name: Fetch brand profile
+        id: brand
+        run: |
+          name=$(python scripts/fetch_brand.py --brand "${{ inputs.brand }}" --out-dir "$RUNNER_TEMP/brand")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare branded source
+        env:
+          BRAND_JSON_FILE: ${{ runner.temp }}/brand/brand.json
+        run: |
+          export BRAND_JSON="$(cat "$BRAND_JSON_FILE")"
+          python scripts/prepare.py --profile "${{ inputs.brand }}" --client FlClash --out ./src
+
+      - name: Set up signing
+        shell: bash
+        env:
+          SIGNING_JSON: ${{ secrets.SIGNING_JSON }}
+          BRAND: ${{ inputs.brand }}
+        run: |
+          python scripts/signing.py --brand "$BRAND" \
+            --keystore-out src/android/app/keystore.jks \
+            --format flclash --props-out src/android/local.properties
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.0'
+          cache-dependency-path: src/core/go.sum
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.41.9
+          cache: true
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r28c
+          add-to-path: true
+          link-to-sdk: true
+
+      - name: Flutter pub get
+        working-directory: ./src
+        run: |
+          flutter --version
+          flutter pub get
+
+      - name: Build (native core + Flutter APK)
+        working-directory: ./src
+        run: dart setup.dart android --env stable -v
+
+      - name: Publish artifacts
+        run: |
+          python scripts/r2_upload.py \
+            --brand "${{ inputs.brand }}" \
+            --name "${{ steps.brand.outputs.name }}" \
+            --kind flclash \
+            --glob 'src/dist/*'

@@ -1,0 +1,163 @@
+name: desktop
+
+# Desktop client build (Tauri). Pulls the brand profile from object storage at
+# build time, applies it to upstream, builds per platform, and publishes the
+# installers to object storage (not to this repo's Releases).
+#
+# Cost note: this builds one brand across the platform matrix. macOS runners
+# bill at 10x on private repos; use 'include_intel_mac' to skip the Intel build.
+
+on:
+  workflow_dispatch:
+    inputs:
+      brand:
+        description: 'Brand id'
+        required: true
+      ref:
+        description: 'Upstream ref to build from'
+        required: true
+        default: v2.5.1
+      include_intel_mac:
+        description: 'Also build macOS Intel (x64). Disable to save minutes.'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: short
+  HUSKY: 0
+  # Windows Python defaults to cp1252 and cannot handle non-ASCII brand names;
+  # force UTF-8 so prepare.py / adapters work on all runners.
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: 'utf-8'
+  R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_AUTH_EMAIL: ${{ secrets.R2_AUTH_EMAIL }}
+  R2_AUTH_KEY: ${{ secrets.R2_AUTH_KEY }}
+
+jobs:
+  build:
+    name: ${{ matrix.plat.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        plat:
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: macos-latest,   target: aarch64-apple-darwin }
+          - { os: macos-latest,   target: x86_64-apple-darwin }
+          - { os: ubuntu-22.04,   target: x86_64-unknown-linux-gnu }
+    runs-on: ${{ matrix.plat.os }}
+    steps:
+      - name: Decide whether to run this platform
+        id: gate
+        shell: bash
+        run: |
+          run=true
+          if [ "${{ matrix.plat.target }}" = "x86_64-apple-darwin" ] && [ "${{ inputs.include_intel_mac }}" = "false" ]; then run=false; fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout builder
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Pillow (icon gen)
+        if: steps.gate.outputs.run == 'true'
+        run: python -m pip install --quiet pillow
+
+      # Node/npx is needed by prepare.py (Tauri icon generation), so set it up first.
+      - name: Setup Node
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+
+      - name: Fetch brand profile
+        if: steps.gate.outputs.run == 'true'
+        id: brand
+        shell: bash
+        run: |
+          name=$(python scripts/fetch_brand.py --brand "${{ inputs.brand }}" --out-dir "$RUNNER_TEMP/brand")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      # Prepare must run before any step that references ./src (Rust cache, pnpm).
+      - name: Prepare branded source
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          export BRAND_JSON="$(cat "$RUNNER_TEMP/brand/brand.json")"
+          python scripts/prepare.py --profile "${{ inputs.brand }}" --client clash-verge-rev --tag "${{ inputs.ref }}" --out ./src
+
+      - name: Install Rust
+        if: steps.gate.outputs.run == 'true'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.96.0'
+          targets: ${{ matrix.plat.target }}
+
+      # Upstream pins a Rust channel via src/rust-toolchain.toml. Add the
+      # target from inside ./src so it lands on the toolchain the build uses.
+      - name: Ensure target installed
+        if: steps.gate.outputs.run == 'true'
+        working-directory: ./src
+        run: rustup target add ${{ matrix.plat.target }}
+
+      - name: Rust cache
+        if: steps.gate.outputs.run == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: '${{ inputs.brand }}-${{ matrix.plat.target }}'
+          workspaces: 'src -> target'
+
+      - name: Linux deps
+        if: steps.gate.outputs.run == 'true' && matrix.plat.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxslt1.1 libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: macOS Intel OpenSSL
+        if: steps.gate.outputs.run == 'true' && matrix.plat.target == 'x86_64-apple-darwin'
+        run: |
+          arch -x86_64 brew install openssl@3
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> "$GITHUB_ENV"
+
+      - name: Setup pnpm
+        if: steps.gate.outputs.run == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+          run_install: false
+
+      - name: Install JS deps and prebuild core
+        if: steps.gate.outputs.run == 'true'
+        working-directory: ./src
+        run: |
+          pnpm i
+          pnpm run prebuild ${{ matrix.plat.target }}
+
+      - name: Build installers
+        if: steps.gate.outputs.run == 'true'
+        working-directory: ./src
+        env:
+          NODE_OPTIONS: '--max_old_space_size=4096'
+        run: pnpm tauri build --target ${{ matrix.plat.target }}
+
+      - name: Publish artifacts
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          python scripts/r2_upload.py \
+            --brand "${{ inputs.brand }}" \
+            --name "${{ steps.brand.outputs.name }}" \
+            --kind desktop \
+            --glob "src/src-tauri/target/${{ matrix.plat.target }}/release/bundle/**/*" \
+            --glob "src/src-tauri/target/release/bundle/**/*"

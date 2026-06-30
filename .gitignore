@@ -1,0 +1,23 @@
+# Never commit signing material or secrets (defense in depth)
+*.jks
+*.keystore
+key.properties
+keystore.properties
+.secrets*.json
+*.secret
+.env
+.env.*
+google-services.json
+GoogleService-Info.plist
+
+# local profile data for offline dev (never published)
+/profiles/*.json
+!/profiles/_schema.json
+!/profiles/_template.json
+/assets/
+
+# build output / scratch
+/src/
+/dist/
+__pycache__/
+*.pyc

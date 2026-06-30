@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Build profile",
+  "type": "object",
+  "required": ["id", "brand"],
+  "properties": {
+    "id": { "type": "string", "description": "Unique profile id; used as the artifact directory name" },
+    "enabled": { "type": "boolean", "default": true },
+    "brand": {
+      "type": "object",
+      "required": ["appName", "packageId"],
+      "properties": {
+        "appName": { "type": "string", "description": "App display name" },
+        "appNameEn": { "type": "string", "description": "App name (ASCII)" },
+        "slogan": { "type": "string" },
+        "packageId": { "type": "string", "description": "Android applicationId / desktop identifier" },
+        "primaryColor": { "type": "string", "pattern": "^#([0-9a-fA-F]{6})$" },
+        "iconPath": { "type": "string", "description": "Local icon path (offline dev only)" },
+        "iconUrl": { "type": "string", "description": "Icon URL fetched at build time" }
+      }
+    },
+    "recommend": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "title": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "buttonText": { "type": "string" },
+        "purchaseUrl": { "type": "string" },
+        "websiteUrl": { "type": "string" },
+        "bannerImage": { "type": "string" }
+      }
+    },
+    "subscription": {
+      "type": "object",
+      "properties": {
+        "presetUrl": { "type": "string" },
+        "remoteConfigUrl": { "type": "string" },
+        "supportUrl": { "type": "string" }
+      }
+    },
+    "legal": {
+      "type": "object",
+      "properties": {
+        "privacyPolicyUrl": { "type": "string" },
+        "termsUrl": { "type": "string" },
+        "telegramUrl": { "type": "string" }
+      }
+    },
+    "targets": {
+      "type": "object",
+      "description": "Per-client enable flags (true/false)",
+      "additionalProperties": { "type": "boolean" }
+    }
+  }
+}

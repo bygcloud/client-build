@@ -1,0 +1,118 @@
+name: cmfa
+
+# Clash Meta for Android build (native Kotlin + Mihomo core). Pulls the brand
+# profile from object storage at build time, applies it, signs with that brand's
+# keystore, and publishes artifacts to object storage (not to this repo).
+
+on:
+  workflow_dispatch:
+    inputs:
+      brand:
+        description: 'Brand id'
+        required: true
+      ref:
+        description: 'Upstream ref to build from'
+        required: true
+        default: v2.11.7
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: 'utf-8'
+  R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_AUTH_EMAIL: ${{ secrets.R2_AUTH_EMAIL }}
+  R2_AUTH_KEY: ${{ secrets.R2_AUTH_KEY }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Native + Go core build is disk-heavy; reclaim space (keep SDK NDK).
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/share/swift \
+            /usr/local/share/powershell /usr/local/share/chromium /usr/local/lib/node_modules \
+            /opt/hostedtoolcache || true
+          sudo apt-get clean || true
+          df -h / | tail -1
+
+      - name: Checkout builder
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Pillow (icon gen)
+        run: python -m pip install --quiet pillow
+
+      - name: Fetch brand profile
+        id: brand
+        run: |
+          name=$(python scripts/fetch_brand.py --brand "${{ inputs.brand }}" --out-dir "$RUNNER_TEMP/brand")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare branded source
+        env:
+          BRAND_JSON_FILE: ${{ runner.temp }}/brand/brand.json
+        run: |
+          export BRAND_JSON="$(cat "$BRAND_JSON_FILE")"
+          python scripts/prepare.py --profile "${{ inputs.brand }}" --client ClashMetaForAndroid --out ./src
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Go (MetaCubeX fork)
+        uses: actions/setup-go@v5
+        with:
+          go-download-base-url: 'https://github.com/MetaCubeX/go/releases/download/build'
+          go-version: '1.26'
+
+      - name: Apply Go patches
+        run: |
+          cd "$(go env GOROOT)"
+          for p in "$GITHUB_WORKSPACE"/src/.github/patch/*.patch; do
+            echo "applying $p"; patch -p1 < "$p" || true
+          done
+
+      - name: Update CA bundle for core
+        run: |
+          sudo apt-get update && sudo apt-get install -y ca-certificates
+          sudo update-ca-certificates
+          cp -f /etc/ssl/certs/ca-certificates.crt src/core/src/foss/golang/clash/component/ca/ca-certificates.crt || true
+
+      - name: Set up signing
+        shell: bash
+        env:
+          SIGNING_JSON: ${{ secrets.SIGNING_JSON }}
+          BRAND: ${{ inputs.brand }}
+        run: |
+          python scripts/signing.py --brand "$BRAND" \
+            --keystore-out src/release.keystore \
+            --format cmfa --props-out src/signing.properties
+
+      - name: Build Meta release
+        working-directory: ./src
+        run: |
+          # CMakeLists embeds version via `git submodule foreach git ...`; avoid
+          # git "dubious ownership" refusing to run inside the CI checkout.
+          git config --global --add safe.directory '*'
+          ./gradlew --no-daemon app:assembleMetaRelease
+
+      - name: Publish artifacts
+        run: |
+          python scripts/r2_upload.py \
+            --brand "${{ inputs.brand }}" \
+            --name "${{ steps.brand.outputs.name }}" \
+            --kind cmfa \
+            --glob 'src/app/build/outputs/apk/meta/release/*.apk'
