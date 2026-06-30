@@ -94,7 +94,7 @@ jobs:
         shell: bash
         run: |
           export BRAND_JSON="$(cat "$RUNNER_TEMP/brand/brand.json")"
-          python scripts/prepare.py --profile "${{ inputs.brand }}" --client clash-verge-rev --tag "${{ inputs.ref }}" --out ./src
+          python scripts/prepare.py --airport "${{ inputs.brand }}" --client clash-verge-rev --tag "${{ inputs.ref }}" --out ./src
 
       - name: Install Rust
         if: steps.gate.outputs.run == 'true'
@@ -155,9 +155,14 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         shell: bash
         run: |
+          # Upstream builds into src/target (workspace target dir), not
+          # src/src-tauri/target. Cover both layouts and the platform-specific
+          # and default-target bundle directories.
           python scripts/r2_upload.py \
             --brand "${{ inputs.brand }}" \
             --name "${{ steps.brand.outputs.name }}" \
             --kind desktop \
+            --glob "src/target/${{ matrix.plat.target }}/release/bundle/**/*" \
+            --glob "src/target/release/bundle/**/*" \
             --glob "src/src-tauri/target/${{ matrix.plat.target }}/release/bundle/**/*" \
             --glob "src/src-tauri/target/release/bundle/**/*"
