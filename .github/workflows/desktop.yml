@@ -94,7 +94,7 @@ jobs:
         shell: bash
         run: |
           export BRAND_JSON="$(cat "$RUNNER_TEMP/brand/brand.json")"
-          python scripts/prepare.py --airport "${{ inputs.brand }}" --client clash-verge-rev --tag "${{ inputs.ref }}" --out ./src
+          python scripts/prepare.py --profile "${{ inputs.brand }}" --client clash-verge-rev --tag "${{ inputs.ref }}" --out ./src
 
       - name: Install Rust
         if: steps.gate.outputs.run == 'true'
