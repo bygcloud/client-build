@@ -66,6 +66,45 @@ jobs:
           export BRAND_JSON="$(cat "$RUNNER_TEMP/brand/brand.json")"
           python scripts/prepare.py --profile "${{ inputs.brand }}" --client clash-verge-rev --tag "${{ inputs.ref }}" --out ./src
 
+      - name: DIAG PATCH - surface the swallowed build error to stderr
+        shell: bash
+        run: |
+          cd src
+          echo "=== before: the swallowing logging! calls ==="
+          grep -n 'Failed to build Tauri application' src-tauri/src/lib.rs || true
+          # Insert an eprintln! right before each std::process::exit(1) in lib.rs so
+          # the real generate_context! error is printed (the logging! macro is a
+          # no-op before the logger is initialised, which is why it's invisible).
+          python - <<'PY'
+          import re, pathlib
+          f = pathlib.Path("src-tauri/src/lib.rs")
+          s = f.read_text()
+          # In each build().unwrap_or_else closure, add eprintln! before exit(1).
+          s = s.replace(
+              'logging!(error, Type::Setup, "Failed to build Tauri application: {}", e);\n        std::process::exit(1);',
+              'eprintln!("DIAG_BUILD_ERROR: {:#?}", e);\n        logging!(error, Type::Setup, "Failed to build Tauri application: {}", e);\n        std::process::exit(1);'
+          )
+          f.write_text(s)
+          print("patched:", s.count("DIAG_BUILD_ERROR"), "site(s)")
+          PY
+          echo "=== also install a panic hook at the very top of run() to catch panics ==="
+          python - <<'PY'
+          import pathlib
+          f = pathlib.Path("src-tauri/src/lib.rs")
+          s = f.read_text()
+          marker = "pub fn run() {"
+          hook = ('pub fn run() {\n'
+                  '    std::panic::set_hook(Box::new(|info| {\n'
+                  '        eprintln!("DIAG_PANIC: {}", info);\n'
+                  '    }));')
+          if marker in s and "DIAG_PANIC" not in s:
+              s = s.replace(marker, hook, 1)
+              f.write_text(s)
+              print("panic hook installed")
+          else:
+              print("marker not found or already installed")
+          PY
+
       - name: Dump branded icon + config facts
         shell: bash
         run: |
