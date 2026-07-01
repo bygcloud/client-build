@@ -39,6 +39,63 @@ def _brand_port(brand_id: str) -> int:
     return 40000 + (zlib.crc32(brand_id.encode()) % 10000)
 
 
+# A valid (upstream) minisign public key. The updater plugin requires *a*
+# pubkey to initialise; keeping this one is harmless because we never produce
+# signed update artifacts and point the endpoints at a dead URL, so no update
+# can ever be fetched or applied. Used only as a fallback if the upstream conf
+# somehow lacks a pubkey.
+_FALLBACK_PUBKEY = (
+    "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQyOEMyRjBCQkVGOUJ"
+    "EREYKUldUZnZmbStDeStNMHU5Mmo1N24xQXZwSVRYbXA2NUpzZE5oVzlqeS9Bc0t6RVV4Mmt"
+    "wVjBZaHgK"
+)
+
+
+def _neuter_updater(base_conf: Path, brand: dict, dry_run: bool) -> None:
+    """Disable auto-update while keeping plugins.updater well-formed.
+
+    Rewrites the plugins.updater block via JSON so the required `pubkey` field is
+    always present (its absence crashes plugin init on macOS/Windows). Sets
+    createUpdaterArtifacts=false and points endpoints at a dead brand URL so no
+    real update can ever be fetched.
+    """
+    import json
+
+    if not base_conf.exists():
+        c.log(f"skip updater neuter (missing): {base_conf.name}")
+        return
+    conf = json.loads(c.read(base_conf))
+
+    # No signed update artifacts (bundling would otherwise need a signing key).
+    b = conf.setdefault("bundle", {})
+    b["createUpdaterArtifacts"] = False
+
+    plugins = conf.get("plugins")
+    if isinstance(plugins, dict) and "updater" in plugins:
+        upd = plugins["updater"]
+        if not isinstance(upd, dict):
+            upd = {}
+        # Guarantee the required pubkey stays present.
+        if not upd.get("pubkey"):
+            upd["pubkey"] = _FALLBACK_PUBKEY
+        # Dead endpoint: prefer a per-brand repo path if provided, else a URL
+        # that resolves to nothing publishable. Either way we never ship a
+        # manifest there, so no update is ever found.
+        upd_repo = brand.get("updaterRepo")
+        if upd_repo:
+            upd["endpoints"] = [
+                f"https://github.com/{upd_repo}/releases/download/updater/update.json"
+            ]
+        else:
+            upd["endpoints"] = [
+                "https://updates.invalid.localhost/no-update.json"
+            ]
+        plugins["updater"] = upd
+
+    c.write(base_conf, json.dumps(conf, ensure_ascii=False, indent=2) + "\n", dry_run)
+    c.log("neutered updater (kept pubkey, disabled artifacts, dead endpoint)")
+
+
 def apply(client_dir: Path, cfg: dict, dry_run: bool = False) -> None:
     brand = cfg["brand"]
     rec = cfg.get("recommend", {})
@@ -214,36 +271,25 @@ def apply(client_dir: Path, cfg: dict, dry_run: bool = False) -> None:
         dry_run, required=False,
     )
 
-    # 3) Disable upstream auto-update:
-    #    a) createUpdaterArtifacts=false — otherwise bundling needs a signing key;
-    #    b) remove updater.pubkey — a pubkey also forces signing;
-    #    c) point endpoints at an own repo (missing -> silently no update) so the
-    #       upstream latest.json can't replace the build with an unbranded one.
+    # 3) Disable upstream auto-update WITHOUT breaking the updater plugin.
+    #
+    #    CRITICAL: the tauri-plugin-updater initialises from plugins.updater and
+    #    REQUIRES a `pubkey` field. On macOS/Windows the plugin init deserialises
+    #    the config eagerly, so dropping `pubkey` (as an earlier version did) makes
+    #    generate_context! / build() fail with:
+    #        PluginInitialization("updater", "... missing field `pubkey`")
+    #    and the app exits(1) immediately on launch ("installs but won't start").
+    #    Linux's updater path doesn't hit this, which is why it looked fine there.
+    #
+    #    So we KEEP a valid pubkey and instead neuter updates the safe way:
+    #      - createUpdaterArtifacts=false: no signed update artifacts are produced;
+    #      - endpoints -> a dead/brand URL: the app can never fetch an update
+    #        manifest (and we never publish one / never hold the private key), so
+    #        it can't be silently replaced by the upstream build.
+    #    This is done with a JSON rewrite so the block stays well-formed and the
+    #    required `pubkey` is guaranteed present.
     base_conf = client_dir / "src-tauri/tauri.conf.json"
-    c.regex_replace(
-        base_conf,
-        r'"createUpdaterArtifacts":\s*(true|false)',
-        '"createUpdaterArtifacts": false',
-        dry_run, required=False,
-    )
-    # Drop pubkey together with its trailing comma to avoid leaving broken JSON
-    # like "updater": {,
-    c.regex_replace(
-        base_conf,
-        r'"pubkey":\s*"[^"]*"\s*,?\s*',
-        "",
-        dry_run, required=False,
-    )
-    upd_repo = brand.get("updaterRepo")  # optional, e.g. "<owner>/<repo>"
-    if upd_repo:
-        c.regex_replace(
-            base_conf,
-            r'"endpoints":\s*\[[^\]]*\]',
-            '"endpoints": [\n      "https://github.com/'
-            + upd_repo
-            + '/releases/download/updater/update.json"\n    ]',
-            dry_run, required=False,
-        )
+    _neuter_updater(base_conf, brand, dry_run)
 
     # 4) Inject the recommendation button into the settings header
     if rec.get("enabled", False) and rec.get("purchaseUrl"):
