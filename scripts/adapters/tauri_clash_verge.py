@@ -5,8 +5,10 @@ Applies:
 2. Window title / tray tooltip / HTML title (upstream hardcodes "Clash Verge").
 3. Disables upstream auto-update (otherwise the app pulls the upstream build and
    overwrites the branding).
-4. Optional recommendation entry: a button in the settings header ButtonGroup
-   that opens a configured URL via openWebUrl(url) (system browser).
+4. Optional recommendation entries (both open recommend.purchaseUrl in the
+   system browser via openWebUrl):
+     a) a gift button in the settings header ButtonGroup, and
+     b) a prominent full-width banner card at the top of the home page.
 
 Icons are generated separately via `@tauri-apps/cli icon <icon>`; this adapter
 does not handle binary icons.
@@ -335,6 +337,80 @@ def apply(client_dir: Path, cfg: dict, dry_run: bool = False) -> None:
             '<ButtonGroup variant="contained" aria-label="Basic button group">',
             button,
             dry_run,
+        )
+
+        # 4b) Prominent drainage: a full-width banner card at the TOP of the home
+        #     page. The settings-header gift icon above is easy to miss, so this
+        #     puts an obvious membership call-to-action on the first screen the
+        #     user sees. Reuses home.tsx's existing openWebUrl + useLockFn +
+        #     Box/Grid imports; only adds a handler and a Grid item. Anchors are
+        #     from upstream v2.5.x home.tsx and matched exactly.
+        home = client_dir / "src/pages/home.tsx"
+        sub = rec.get("subtitle", "")
+        btn_text = rec.get("buttonText", "\u7acb\u5373\u5f00\u901a")
+        c.insert_after(
+            home,
+            "  const toGithubDoc = useLockFn(() => {\n"
+            "    return openWebUrl('https://clash-verge-rev.github.io/index.html')\n"
+            "  })\n",
+            (
+                "\n  const toBrandPurchase = useLockFn(() => {\n"
+                f"    return openWebUrl('{rec['purchaseUrl']}')\n"
+                "  })\n"
+            ),
+            dry_run, required=False,
+        )
+        banner = (
+            "\n        <Grid size={12}>\n"
+            "          <Box\n"
+            "            onClick={toBrandPurchase}\n"
+            "            sx={{\n"
+            "              cursor: 'pointer',\n"
+            "              borderRadius: 2,\n"
+            "              px: 2.5,\n"
+            "              py: 1.75,\n"
+            "              display: 'flex',\n"
+            "              alignItems: 'center',\n"
+            "              justifyContent: 'space-between',\n"
+            "              gap: 2,\n"
+            "              color: '#fff',\n"
+            "              background:\n"
+            "                'linear-gradient(135deg, #23b79c 0%, #1b8f7a 100%)',\n"
+            "              boxShadow: '0 6px 18px rgba(35,183,156,0.35)',\n"
+            "              transition: 'transform .2s ease, box-shadow .2s ease',\n"
+            "              '&:hover': {\n"
+            "                transform: 'translateY(-2px)',\n"
+            "                boxShadow: '0 10px 24px rgba(35,183,156,0.5)',\n"
+            "              },\n"
+            "            }}\n"
+            "          >\n"
+            "            <Box sx={{ minWidth: 0 }}>\n"
+            f"              <Box sx={{{{ fontSize: 16, fontWeight: 700 }}}}>{title}</Box>\n"
+            f"              <Box sx={{{{ fontSize: 12.5, opacity: 0.92, mt: 0.25 }}}}>{sub}</Box>\n"
+            "            </Box>\n"
+            "            <Box\n"
+            "              sx={{\n"
+            "                flexShrink: 0,\n"
+            "                px: 2,\n"
+            "                py: 0.75,\n"
+            "                borderRadius: 1.5,\n"
+            "                fontSize: 13.5,\n"
+            "                fontWeight: 700,\n"
+            "                whiteSpace: 'nowrap',\n"
+            "                color: '#1b8f7a',\n"
+            "                background: '#fff',\n"
+            "              }}\n"
+            "            >\n"
+            f"              {btn_text}\n"
+            "            </Box>\n"
+            "          </Box>\n"
+            "        </Grid>\n"
+        )
+        c.insert_after(
+            home,
+            "<Grid container spacing={1.5} columns={{ xs: 6, sm: 6, md: 12 }}>",
+            banner,
+            dry_run, required=False,
         )
 
     c.log("clash-verge-rev adapter applied")
