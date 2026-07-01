@@ -1,0 +1,146 @@
+name: diag
+
+# TEMPORARY diagnostic workflow: build ONE brand for Linux only, then RUN the
+# built binary headlessly (xvfb) to capture the runtime panic that makes the
+# branded app exit immediately on launch (generate_context! panic). Linux is the
+# cheapest runner and reproduces the same crash. Delete after diagnosis.
+
+on:
+  workflow_dispatch:
+    inputs:
+      brand:
+        description: 'Brand id'
+        required: true
+        default: hongxing
+      ref:
+        description: 'Upstream ref to build from'
+        required: true
+        default: v2.5.1
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: full
+  HUSKY: 0
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: 'utf-8'
+  R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_AUTH_EMAIL: ${{ secrets.R2_AUTH_EMAIL }}
+  R2_AUTH_KEY: ${{ secrets.R2_AUTH_KEY }}
+
+jobs:
+  diag:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout builder
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Pillow (icon gen)
+        run: python -m pip install --quiet pillow
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+
+      - name: Fetch brand profile
+        id: brand
+        shell: bash
+        run: |
+          name=$(python scripts/fetch_brand.py --brand "${{ inputs.brand }}" --out-dir "$RUNNER_TEMP/brand")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare branded source
+        shell: bash
+        run: |
+          export BRAND_JSON="$(cat "$RUNNER_TEMP/brand/brand.json")"
+          python scripts/prepare.py --profile "${{ inputs.brand }}" --client clash-verge-rev --tag "${{ inputs.ref }}" --out ./src
+
+      - name: Dump branded icon + config facts
+        shell: bash
+        run: |
+          echo "=== identifier / productName ==="
+          grep -H '"identifier"\|"productName"' src/src-tauri/tauri*.conf.json || true
+          echo "=== icon files ==="
+          ls -la src/src-tauri/icons/ || true
+          echo "=== icon.png / 128x128.png details (python) ==="
+          python - <<'PY'
+          from PIL import Image, PngImagePlugin
+          import os
+          for p in ["icon.png","32x32.png","128x128.png","128x128@2x.png"]:
+              f = f"src/src-tauri/icons/{p}"
+              if not os.path.exists(f):
+                  print(p, "MISSING"); continue
+              im = Image.open(f); im.load()
+              print(p, im.size, im.mode, "icc:" , bool(im.info.get('icc_profile')))
+          PY
+          echo "=== @tauri-apps/cli version used ==="
+          npx --yes @tauri-apps/cli --version || true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.96.0'
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Ensure target installed
+        working-directory: ./src
+        run: rustup target add x86_64-unknown-linux-gnu
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: 'diag-${{ inputs.brand }}-linux'
+          workspaces: 'src -> target'
+
+      - name: Linux deps (incl xvfb to run headless)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxslt1.1 libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xvfb
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+          run_install: false
+
+      - name: Install JS deps and prebuild core
+        working-directory: ./src
+        run: |
+          pnpm i
+          pnpm run prebuild x86_64-unknown-linux-gnu
+
+      - name: Build DEBUG binary (keeps panic messages)
+        working-directory: ./src
+        env:
+          NODE_OPTIONS: '--max_old_space_size=4096'
+        run: pnpm tauri build --debug --target x86_64-unknown-linux-gnu --no-bundle
+
+      - name: Locate and RUN the binary to capture the panic
+        working-directory: ./src
+        shell: bash
+        run: |
+          echo "=== finding built binary ==="
+          BIN=$(find target -type f -path '*debug*' \( -name 'clash-verge' -o -name '*verge*' \) -perm -u+x ! -name '*.d' 2>/dev/null | grep -v build/ | head -1)
+          echo "BIN=$BIN"
+          if [ -z "$BIN" ]; then echo "no binary found"; find target -maxdepth 4 -type f -perm -u+x | head; exit 1; fi
+          echo "=== running under xvfb (RUST_BACKTRACE=full), capturing all output ==="
+          set +e
+          RUST_BACKTRACE=full RUST_LOG=trace xvfb-run -a "$BIN" > /tmp/app_stdout.txt 2> /tmp/app_stderr.txt &
+          APPPID=$!
+          sleep 12
+          kill $APPPID 2>/dev/null
+          echo "exit-check done"
+          echo "======================== STDERR (the panic) ========================"
+          cat /tmp/app_stderr.txt || true
+          echo "======================== STDOUT ========================"
+          cat /tmp/app_stdout.txt || true
+          echo "======================== END ========================"
