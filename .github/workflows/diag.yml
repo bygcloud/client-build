@@ -128,19 +128,22 @@ jobs:
         working-directory: ./src
         shell: bash
         run: |
-          echo "=== finding built binary ==="
-          BIN=$(find target -type f -path '*debug*' \( -name 'clash-verge' -o -name '*verge*' \) -perm -u+x ! -name '*.d' 2>/dev/null | grep -v build/ | head -1)
+          echo "=== all candidate binaries ==="
+          find target -type f -name 'clash-verge*' -perm -u+x ! -name '*.d' 2>/dev/null | grep -v build/ || true
+          echo "=== picking the MAIN app binary (exactly clash-verge, not -service*) ==="
+          BIN=$(find target -type f -name 'clash-verge' -perm -u+x ! -name '*.d' 2>/dev/null | grep -v build/ | head -1)
           echo "BIN=$BIN"
-          if [ -z "$BIN" ]; then echo "no binary found"; find target -maxdepth 4 -type f -perm -u+x | head; exit 1; fi
-          echo "=== running under xvfb (RUST_BACKTRACE=full), capturing all output ==="
+          if [ -z "$BIN" ]; then echo "no binary found"; find target -maxdepth 4 -type f -perm -u+x | head -40; exit 1; fi
+          echo "=== running MAIN app under xvfb (RUST_BACKTRACE=full), capturing all output ==="
           set +e
-          RUST_BACKTRACE=full RUST_LOG=trace xvfb-run -a "$BIN" > /tmp/app_stdout.txt 2> /tmp/app_stderr.txt &
-          APPPID=$!
-          sleep 12
-          kill $APPPID 2>/dev/null
-          echo "exit-check done"
+          RUST_BACKTRACE=full RUST_LOG=trace timeout 15 xvfb-run -a "$BIN" > /tmp/app_stdout.txt 2> /tmp/app_stderr.txt
+          RC=$?
+          echo "app exit code = $RC (124=timeout=stayed alive=GOOD; other=crashed)"
           echo "======================== STDERR (the panic) ========================"
           cat /tmp/app_stderr.txt || true
           echo "======================== STDOUT ========================"
           cat /tmp/app_stdout.txt || true
+          echo "======================== data dir / logs after run ========================"
+          ls -la "$HOME/.local/share/"*hongxing* "$HOME/.config/"*hongxing* 2>/dev/null || echo "(no data dir created)"
+          find "$HOME/.local/share" "$HOME/.config" -iname '*.log' -path '*hongxing*' 2>/dev/null | head
           echo "======================== END ========================"
