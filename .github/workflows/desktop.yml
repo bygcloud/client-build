@@ -123,12 +123,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libxslt1.1 libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
-      - name: macOS Intel OpenSSL
-        if: steps.gate.outputs.run == 'true' && matrix.plat.target == 'x86_64-apple-darwin'
-        run: |
-          arch -x86_64 brew install openssl@3
-          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> "$GITHUB_ENV"
+      # NOTE: The old "macOS Intel OpenSSL" step (arch -x86_64 brew install
+      # openssl@3) was removed. macos-latest runners are now Apple Silicon, and
+      # Homebrew refuses to install x86_64 formulae under Rosetta in the ARM
+      # prefix (/opt/homebrew), which broke every Intel build. The project has no
+      # native openssl-sys dependency (only openssl-probe, which just locates the
+      # system CA bundle), so cross-compiling to x86_64-apple-darwin needs no
+      # OpenSSL at all — proven by the aarch64 build, which succeeds without it.
 
       - name: Setup pnpm
         if: steps.gate.outputs.run == 'true'
