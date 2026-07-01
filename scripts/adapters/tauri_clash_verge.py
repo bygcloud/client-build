@@ -13,10 +13,17 @@ does not handle binary icons.
 """
 from __future__ import annotations
 
+import re
 import zlib
 from pathlib import Path
 
 import _common as c
+
+
+def _brand_slug(brand_id: str, fallback: str = "brand") -> str:
+    """Lowercase alphanumeric brand token used for scheme / pipe / socket names."""
+    slug = re.sub(r"[^a-z0-9]", "", (brand_id or fallback).lower())
+    return slug or fallback
 
 
 def _brand_port(brand_id: str) -> int:
@@ -77,6 +84,7 @@ def apply(client_dir: Path, cfg: dict, dry_run: bool = False) -> None:
     #       - APP_ID: the per-user data dir name; sharing it mixes brand configs.
     pkg_id = brand["packageId"]
     port = _brand_port(brand_id or pkg_id)
+    brand_slug = _brand_slug(brand_id or brand.get("appNameEn", "") or pkg_id)
     constants = client_dir / "src-tauri/src/constants.rs"
     # Replace the release SINGLETON_SERVER (33331). The dev one (11233) is behind
     # cfg(debug_assertions) and never built in CI, so only swap the first/real one.
@@ -92,6 +100,70 @@ def apply(client_dir: Path, cfg: dict, dry_run: bool = False) -> None:
         r'pub static APP_ID: &str = "[^"]*";',
         f'pub static APP_ID: &str = "{pkg_id}";',
         dry_run, count=1, required=False,
+    )
+    # Also isolate the backup dir name (defaults to clash-verge-rev-backup).
+    c.regex_replace(
+        dirs_rs,
+        r'pub static BACKUP_DIR: &str = "clash-verge-rev-backup";',
+        f'pub static BACKUP_DIR: &str = "{brand_slug}-backup";',
+        dry_run, count=1, required=False,
+    )
+
+    # 1b-ii) The mihomo core IPC channel is ALSO hardcoded to the upstream name.
+    #        On Windows it is a named pipe (\\.\pipe\verge-mihomo); on unix a
+    #        socket file (verge-mihomo.sock). A co-installed official build owns
+    #        the same pipe/socket, so the branded core can't bind its own channel
+    #        and the app "runs but the core won't connect / proxy toggle dead".
+    #        Make the channel name per-brand too.
+    c.regex_replace(
+        dirs_rs,
+        r'\\\\\.\\pipe\\verge-mihomo',
+        rf'\\\\.\\pipe\\{brand_slug}-mihomo',
+        dry_run, count=0, required=False,
+    )
+    c.regex_replace(
+        dirs_rs,
+        r'"verge-mihomo\.sock"',
+        f'"{brand_slug}-mihomo.sock"',
+        dry_run, count=0, required=False,
+    )
+
+    # 1b-iii) The external-controller default (127.0.0.1:9097) is hardcoded in
+    #         constants.rs plus two runtime fallbacks in config/clash.rs. Sharing
+    #         the TCP controller port with an official build is another collision
+    #         source when the core runs in TCP (non-IPC) mode. Use a per-brand
+    #         port. Test-only 9097 assertions are left untouched (build-inert).
+    ext_ctrl_port = 9100 + (zlib.crc32((brand_id or pkg_id).encode()) % 700)
+    c.regex_replace(
+        constants,
+        r'pub const DEFAULT_EXTERNAL_CONTROLLER: &str = "127\.0\.0\.1:\d+";',
+        f'pub const DEFAULT_EXTERNAL_CONTROLLER: &str = "127.0.0.1:{ext_ctrl_port}";',
+        dry_run, count=1, required=False,
+    )
+    clash_rs = client_dir / "src-tauri/src/config/clash.rs"
+    c.regex_replace(
+        clash_rs,
+        r'\.unwrap_or_else\(\|\| "127\.0\.0\.1:9097"\.into\(\)\)',
+        f'.unwrap_or_else(|| "127.0.0.1:{ext_ctrl_port}".into())',
+        dry_run, count=0, required=False,
+    )
+    c.regex_replace(
+        clash_rs,
+        r'Err\(_\) => "127\.0\.0\.1:9097"\.into\(\),',
+        f'Err(_) => "127.0.0.1:{ext_ctrl_port}".into(),',
+        dry_run, count=0, required=False,
+    )
+
+    # 1b-iv) deep-link schemes. Upstream registers ["clash", "clash-verge"].
+    #        Keep "clash" (the site tutorials' one-click import emits
+    #        clash://install-config?url=..., which must still resolve to the app)
+    #        and add a brand-specific scheme for future deterministic routing.
+    #        Only the base conf carries the deep-link block.
+    c.regex_replace(
+        client_dir / "src-tauri/tauri.conf.json",
+        r'"schemes":\s*\[[^\]]*\]',
+        f'"schemes": ["clash", "clash-verge", "{brand_slug}"]',
+        dry_run, count=0, required=False,
     )
 
     # 1c) macOS: force a proper ad-hoc signature. Upstream leaves
