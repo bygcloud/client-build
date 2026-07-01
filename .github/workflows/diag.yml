@@ -33,7 +33,9 @@ env:
 
 jobs:
   diag:
-    runs-on: ubuntu-22.04
+    runs-on: macos-latest
+    env:
+      TARGET: aarch64-apple-darwin
     steps:
       - name: Checkout builder
         uses: actions/checkout@v4
@@ -89,22 +91,17 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: '1.96.0'
-          targets: x86_64-unknown-linux-gnu
+          targets: aarch64-apple-darwin
 
       - name: Ensure target installed
         working-directory: ./src
-        run: rustup target add x86_64-unknown-linux-gnu
+        run: rustup target add aarch64-apple-darwin
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: 'diag-${{ inputs.brand }}-linux'
+          key: 'diag-${{ inputs.brand }}-macos'
           workspaces: 'src -> target'
-
-      - name: Linux deps (incl xvfb to run headless)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libxslt1.1 libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xvfb
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -116,13 +113,13 @@ jobs:
         working-directory: ./src
         run: |
           pnpm i
-          pnpm run prebuild x86_64-unknown-linux-gnu
+          pnpm run prebuild aarch64-apple-darwin
 
       - name: Build DEBUG binary (keeps panic messages)
         working-directory: ./src
         env:
           NODE_OPTIONS: '--max_old_space_size=4096'
-        run: pnpm tauri build --debug --target x86_64-unknown-linux-gnu --no-bundle
+        run: pnpm tauri build --debug --target aarch64-apple-darwin --no-bundle
 
       - name: Locate and RUN the binary to capture the panic
         working-directory: ./src
@@ -134,16 +131,17 @@ jobs:
           BIN=$(find target -type f -name 'clash-verge' -perm -u+x ! -name '*.d' 2>/dev/null | grep -v build/ | head -1)
           echo "BIN=$BIN"
           if [ -z "$BIN" ]; then echo "no binary found"; find target -maxdepth 4 -type f -perm -u+x | head -40; exit 1; fi
-          echo "=== running MAIN app under xvfb (RUST_BACKTRACE=full), capturing all output ==="
+          echo "=== running MAIN app (RUST_BACKTRACE=full), capturing all output ==="
           set +e
-          RUST_BACKTRACE=full RUST_LOG=trace timeout 15 xvfb-run -a "$BIN" > /tmp/app_stdout.txt 2> /tmp/app_stderr.txt
+          # macOS: no timeout binary by default; use perl alarm wrapper
+          RUST_BACKTRACE=full RUST_LOG=trace perl -e 'alarm 15; exec @ARGV' "$BIN" > /tmp/app_stdout.txt 2> /tmp/app_stderr.txt
           RC=$?
-          echo "app exit code = $RC (124=timeout=stayed alive=GOOD; other=crashed)"
+          echo "app exit code = $RC (142=alarm/timeout=stayed alive=GOOD; 101=rust panic; other=crashed)"
           echo "======================== STDERR (the panic) ========================"
           cat /tmp/app_stderr.txt || true
           echo "======================== STDOUT ========================"
           cat /tmp/app_stdout.txt || true
           echo "======================== data dir / logs after run ========================"
-          ls -la "$HOME/.local/share/"*hongxing* "$HOME/.config/"*hongxing* 2>/dev/null || echo "(no data dir created)"
-          find "$HOME/.local/share" "$HOME/.config" -iname '*.log' -path '*hongxing*' 2>/dev/null | head
+          ls -la "$HOME/Library/Application Support/"*hongxing* 2>/dev/null || echo "(no data dir created)"
+          find "$HOME/Library/Application Support" -iname '*.log' -path '*hongxing*' 2>/dev/null | head
           echo "======================== END ========================"
