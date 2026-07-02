@@ -150,6 +150,21 @@ jobs:
         working-directory: ./src
         env:
           NODE_OPTIONS: '--max_old_space_size=4096'
+          # macOS Developer ID signing + notarization. Tauri v2 reads these
+          # during `tauri build`: it imports APPLE_CERTIFICATE into a temp
+          # keychain, signs with APPLE_SIGNING_IDENTITY (which OVERRIDES the
+          # adapter's ad-hoc "-" in tauri.macos.conf.json), then notarizes via
+          # APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID and staples the ticket.
+          # Non-macOS runners ignore these vars, so it's safe to always set them.
+          # If the secrets are absent, APPLE_SIGNING_IDENTITY is empty and Tauri
+          # falls back to the conf's "-" ad-hoc signature (previous behavior).
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          KEYCHAIN_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: pnpm tauri build --target ${{ matrix.plat.target }}
 
       - name: Publish artifacts
