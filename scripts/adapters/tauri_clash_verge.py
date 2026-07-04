@@ -9,6 +9,8 @@ Applies:
    system browser via openWebUrl):
      a) a gift button in the settings header ButtonGroup, and
      b) a prominent full-width banner card at the top of the home page.
+5. Pins the mihomo (verge-mihomo) core version in scripts/prebuild.mjs so the
+   bundled tauri-plugin-mihomo can deserialize the core's API responses.
 
 Icons are generated separately via `@tauri-apps/cli icon <icon>`; this adapter
 does not handle binary icons.
@@ -20,6 +22,14 @@ import zlib
 from pathlib import Path
 
 import _common as c
+
+# mihomo (verge-mihomo) stable core pinned for the desktop build. Upstream's
+# scripts/prebuild.mjs otherwise grabs the LATEST stable at build time, which
+# can be newer than what upstream v2.5.1's tauri-plugin-mihomo can strictly
+# parse, breaking the UI's core communication (empty proxy groups / current
+# node and "内核通信错误" on the mode card) even though the core runs and
+# traffic flows. v1.19.25 (2026-05-16) is the stable from v2.5.1's release era.
+MIHOMO_PINNED_VERSION = "v1.19.25"
 
 
 def _brand_slug(brand_id: str, fallback: str = "brand") -> str:
@@ -266,6 +276,36 @@ def apply(client_dir: Path, cfg: dict, dry_run: bool = False) -> None:
         f'window.set_title("{app_name}")',
         dry_run, required=False,
     )
+    # 2b) Sidebar wordmark: upstream renders a "Clash Verge" logo SVG next to
+    #     the app icon in the nav header. It's a vector wordmark (paths, not
+    #     text), so it stays "Clash Verge" regardless of productName. Swap the
+    #     <LogoSvg> render for a brand-name text node and drop the now-unused
+    #     import (web:build runs tsc --noEmit before vite build).
+    layout = client_dir / "src/pages/_layout.tsx"
+    c.regex_replace(
+        layout,
+        r"import LogoSvg from '@/assets/image/logo\.svg\?react'\n",
+        "",
+        dry_run, required=False,
+    )
+    c.replace_once(
+        layout,
+        "<LogoSvg fill={isDark ? 'white' : 'black'} />",
+        (
+            "<span\n"
+            "                  style={{\n"
+            "                    fontSize: '18px',\n"
+            "                    fontWeight: 700,\n"
+            "                    lineHeight: '27px',\n"
+            "                    whiteSpace: 'nowrap',\n"
+            "                    color: isDark ? 'white' : 'black',\n"
+            "                  }}\n"
+            "                >\n"
+            f"                  {app_name}\n"
+            "                </span>"
+        ),
+        dry_run, required=False,
+    )
     c.replace_once(
         client_dir / "src-tauri/src/core/tray/mod.rs",
         '"Clash Verge {}\\n{}: {}\\n{}: {}\\n{}: {}"',
@@ -412,5 +452,27 @@ def apply(client_dir: Path, cfg: dict, dry_run: bool = False) -> None:
             banner,
             dry_run, required=False,
         )
+
+    # 5) Pin the mihomo (verge-mihomo) core to a version the bundled
+    #    tauri-plugin-mihomo can deserialize. See MIHOMO_PINNED_VERSION above:
+    #    upstream prebuild.mjs downloads the LATEST stable, but a newer core
+    #    (e.g. v1.19.27) changes /configs & /proxies fields the strict plugin
+    #    can't parse -> getBaseConfig/getProxies fail -> empty proxy groups &
+    #    "内核通信错误". Force META_VERSION to the pinned stable in
+    #    getLatestReleaseVersion() (returns early, bypassing the latest fetch).
+    c.regex_replace(
+        client_dir / "scripts/prebuild.mjs",
+        r"async function getLatestReleaseVersion\(\) \{\n  if \(!FORCE\) \{",
+        (
+            "async function getLatestReleaseVersion() {\n"
+            f"  META_VERSION = '{MIHOMO_PINNED_VERSION}'\n"
+            "  log_info(`Pinned release version: ${META_VERSION}`)\n"
+            "  await setCachedVersion('META_VERSION', META_VERSION)\n"
+            "  return\n"
+            "  // eslint-disable-next-line no-unreachable\n"
+            "  if (!FORCE) {"
+        ),
+        dry_run, required=False,
+    )
 
     c.log("clash-verge-rev adapter applied")
