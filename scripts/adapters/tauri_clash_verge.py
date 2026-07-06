@@ -11,6 +11,8 @@ Applies:
      b) a prominent full-width banner card at the top of the home page.
 5. Pins the mihomo (verge-mihomo) core version in scripts/prebuild.mjs so the
    bundled tauri-plugin-mihomo can deserialize the core's API responses.
+6. Rebrands the clash-verge-i18n crate's notification/tray/service strings
+   (separate from src/locales) across all shipped languages.
 
 Icons are generated separately via `@tauri-apps/cli icon <icon>`; this adapter
 does not handle binary icons.
@@ -474,5 +476,27 @@ def apply(client_dir: Path, cfg: dict, dry_run: bool = False) -> None:
         ),
         dry_run, required=False,
     )
+
+    # 6) Rebrand the Rust-side notification/tray/service strings shipped in the
+    #    separate `clash-verge-i18n` crate (crates/clash-verge-i18n/locales/*.yml).
+    #    These are NOT under src/locales (the front-end i18n this adapter already
+    #    rebrands elsewhere) -- they're a standalone crate consumed by the Rust
+    #    backend for system notifications ("Clash Verge is running in the
+    #    background", "Clash Verge is about to exit", service install prompts,
+    #    etc). Missing this made the app show the upstream name on every
+    #    minimize/quit/service-prompt notification across all 13 languages,
+    #    even though the window title/tray/sidebar were already rebranded.
+    i18n_dir = client_dir / "crates/clash-verge-i18n/locales"
+    if i18n_dir.is_dir():
+        for locale_file in sorted(i18n_dir.glob("*.yml")):
+            c.regex_replace(
+                locale_file,
+                r"Clash Verge",
+                app_name,
+                dry_run, count=0, required=False,
+            )
+        c.log("rebranded clash-verge-i18n locales (notifications/tray/service)")
+    else:
+        c.log("skip (dir not found): crates/clash-verge-i18n/locales")
 
     c.log("clash-verge-rev adapter applied")
