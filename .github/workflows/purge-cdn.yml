@@ -1,0 +1,39 @@
+name: purge-cdn
+
+# On-demand Cloudflare edge-cache purge for published client artifacts.
+#
+# Client installers are uploaded to R2 under STABLE, version-agnostic keys, so
+# the public download URL is overwritten in place every build. Cloudflare caches
+# those objects at the edge and overwriting R2 does NOT evict the edge copy — a
+# binary was seen frozen at the edge for ~5.5 days while every rebuild only
+# updated R2, so customers kept downloading a stale build. r2_upload.py now
+# purges on every upload; this workflow purges on demand to immediately unstick
+# already-cached URLs without rebuilding.
+
+on:
+  workflow_dispatch:
+    inputs:
+      prefix:
+        description: 'Only purge keys under this R2 prefix'
+        required: false
+        default: 'clients/'
+
+permissions:
+  contents: read
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Purge Cloudflare edge cache
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_AUTH_EMAIL: ${{ secrets.R2_AUTH_EMAIL }}
+          R2_AUTH_KEY: ${{ secrets.R2_AUTH_KEY }}
+          PREFIX: ${{ inputs.prefix }}
+        run: python scripts/r2_purge.py

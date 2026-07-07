@@ -170,6 +170,11 @@ jobs:
       - name: Publish artifacts
         if: steps.gate.outputs.run == 'true'
         shell: bash
+        env:
+          # Recorded into clients/<brand>/VERSION.desktop.json so the live
+          # package can always be traced to a build/commit. GITHUB_SHA/RUN_ID are
+          # provided automatically; UPSTREAM_REF captures the upstream tag built.
+          GITHUB_REF_NAME: ${{ inputs.ref }}
         run: |
           # Upstream builds into src/target (workspace target dir), not
           # src/src-tauri/target. Cover both layouts and the platform-specific
