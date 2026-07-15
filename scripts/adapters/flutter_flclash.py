@@ -71,8 +71,11 @@ def apply(client_dir: Path, cfg: dict, dry_run: bool = False) -> None:
     # 4) 去 Firebase/Crashlytics（避免 google-services.json 硬依赖 + 隐私上报）
     _strip_firebase(client_dir, dry_run)
 
-    # 6) 版本检查源改为品牌自有仓库
-    github_repo = brand.get("githubRepo", brand.get("updaterRepo", ""))
+    # 6) 版本检查源改为品牌自有 FlClash 仓库
+    brand_id = cfg.get("id", "")
+    github_repo = brand.get("flclashRepo", "")
+    if not github_repo and brand_id:
+        github_repo = f"bygcloud/{brand_id}-flclash"
     if github_repo:
         c.regex_replace(
             constant,
